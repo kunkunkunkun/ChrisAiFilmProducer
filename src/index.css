@@ -270,6 +270,16 @@ h6 {
   overflow: hidden;
 }
 
+/* Window Drag Region for Electron */
+.window-drag-region {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
 /* Badge */
 .badge {
   padding: 2px 8px;

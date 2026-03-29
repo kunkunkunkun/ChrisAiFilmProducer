@@ -1,51 +1,118 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MessageSquare, X, Send, PieChart, Calendar, AlertCircle, PlusCircle } from 'lucide-react';
+import { MessageSquare, X, Send, PieChart, AlertCircle, PlusCircle, Loader2 } from 'lucide-react';
+import { useSettings } from '../context/SettingsContext';
+import { callGeminiAPI } from '../utils/gemini';
+import { taskStorage, projectStorage } from '../utils/projectStorage';
 
 const FloatingAssistant = () => {
+    const { geminiKey } = useSettings();
     const [isOpen, setIsOpen] = useState(false);
     const [messages, setMessages] = useState([
-        { role: 'assistant', text: 'Hi! I am your Production Assistant. How can I help you manage your projects today?' }
+        { role: 'assistant', text: 'Hi! I am your Production AI. Ask me for status updates or tell me to add new tasks.' }
     ]);
     const [input, setInput] = useState('');
+    const [isThinking, setIsThinking] = useState(false);
     const scrollRef = useRef(null);
 
-    // Mock Stats
-    const stats = {
-        completion: 68,
-        cost: 42,
-        pending: 12,
-        urgent: 2
+    const [stats, setStats] = useState({ completion: 0, cost: 0, pending: 0, urgent: 0 });
+    const [projectsContext, setProjectsContext] = useState('');
+
+    useEffect(() => {
+        if (isOpen) {
+            refreshContext();
+        }
+    }, [isOpen]);
+
+    const refreshContext = async () => {
+        const currentStats = await taskStorage.getStats();
+        setStats(currentStats);
+        
+        const projects = await projectStorage.loadProjects();
+        const simplified = projects.map(p => `Project ${p.id}: "${p.name}" (Status: ${p.status})`).join(' | ');
+        setProjectsContext(simplified);
     };
 
     useEffect(() => {
         if (scrollRef.current) {
             scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
         }
-    }, [messages]);
+    }, [messages, isThinking]);
 
-    const handleSend = () => {
+    const handleSend = async () => {
         if (!input.trim()) return;
 
         const userMsg = input.trim();
         setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
         setInput('');
+        setIsThinking(true);
 
-        // Basic Command Parsing Logic (Mock)
-        setTimeout(() => {
-            let response = "I'm not sure how to help with that yet. You can ask me about 'status', 'stats', or to 'add a task'.";
+        if (!geminiKey) {
+            setMessages(prev => [...prev, { role: 'assistant', text: "Please configure your Gemini API key in settings to use the AI Agent." }]);
+            setIsThinking(false);
+            return;
+        }
 
-            const lowerMsg = userMsg.toLowerCase();
-            if (lowerMsg.includes('status') || lowerMsg.includes('pending')) {
-                response = `Currently, you have ${stats.pending} pending tasks, including ${stats.urgent} urgent items. Most are in the "Neon Shadows" project.`;
-            } else if (lowerMsg.includes('stats') || lowerMsg.includes('percentage')) {
-                response = `Overall project completion is at ${stats.completion}%. Budget utilization is approximately ${stats.cost}%.`;
-            } else if (lowerMsg.includes('add') && (lowerMsg.includes('task') || lowerMsg.includes('event'))) {
-                response = "I've opened the quick-add shortcut for you! (Feature coming soon: direct natural language entry)";
+        try {
+            const systemPrompt = `You are "Production AI", an expert film production assistant.
+Your job is to help the user manage their projects and tasks.
+Current Projects: ${projectsContext || 'None'}
+Stats: ${stats.pending} pending tasks, ${stats.urgent} urgent tasks.
+
+If the user asks you to add, create, or update a task, or do something actionable, include a JSON block formatted exactly like this somewhere in your response:
+\`\`\`json
+{
+  "actions": [
+    { "type": "add_task", "description": "task description here", "project_id": null, "urgency": 1 }
+  ]
+}
+\`\`\`
+Note: urgency is 1 for urgent, 0 for normal. project_id is an integer (use null if you don't know).
+Always reply naturally to the user and confirm what you did. Be concise.`;
+
+            const chatHistory = messages.map(m => `${m.role === 'assistant' ? 'AI' : 'User'}: ${m.text}`).join('\n');
+            const fullPrompt = `${systemPrompt}\n\nChat History:\n${chatHistory}\nUser: ${userMsg}\nAI:`;
+
+            const aiResponse = await callGeminiAPI(fullPrompt, geminiKey);
+            
+            let cleanResponse = aiResponse;
+            let actionParsed = false;
+            
+            // Check for JSON action blocks
+            const jsonMatch = aiResponse.match(/```json\s*([\s\S]*?)\s*```/);
+            if (jsonMatch) {
+                try {
+                    const data = JSON.parse(jsonMatch[1]);
+                    if (data.actions && Array.isArray(data.actions)) {
+                        for (const action of data.actions) {
+                            if (action.type === 'add_task') {
+                                await taskStorage.addTask({
+                                    projectId: action.project_id || null,
+                                    description: action.description,
+                                    status: 'pending',
+                                    urgency: action.urgency || 0
+                                });
+                                actionParsed = true;
+                            }
+                        }
+                    }
+                    // Remove the JSON block from text shown to user
+                    cleanResponse = aiResponse.replace(jsonMatch[0], '').trim();
+                } catch(e) {
+                    console.error("Failed to parse action JSON from AI", e);
+                }
             }
 
-            setMessages(prev => [...prev, { role: 'assistant', text: response }]);
-        }, 600);
+            if (actionParsed) {
+                await refreshContext();
+            }
+
+            setMessages(prev => [...prev, { role: 'assistant', text: cleanResponse || "Action completed." }]);
+        } catch (e) {
+            setMessages(prev => [...prev, { role: 'assistant', text: `Sorry, I encountered an error: ${e.message}` }]);
+        } finally {
+            setIsThinking(false);
+        }
     };
 
     return (
@@ -107,24 +174,37 @@ const FloatingAssistant = () => {
                                     lineHeight: '1.4',
                                     background: m.role === 'user' ? 'var(--accent-color)' : 'var(--bg-tertiary)',
                                     color: m.role === 'user' ? 'white' : 'var(--text-primary)',
-                                    border: m.role === 'user' ? 'none' : '1px solid var(--border-color)'
+                                    border: m.role === 'user' ? 'none' : '1px solid var(--border-color)',
+                                    whiteSpace: 'pre-wrap'
                                 }}>
                                     {m.text}
                                 </div>
                             ))}
+                            {isThinking && (
+                                <div style={{
+                                    alignSelf: 'flex-start',
+                                    padding: '10px 14px',
+                                    borderRadius: '12px',
+                                    background: 'var(--bg-tertiary)',
+                                    border: '1px solid var(--border-color)'
+                                }}>
+                                    <Loader2 size={16} className="animate-spin text-muted" />
+                                </div>
+                            )}
                         </div>
 
                         {/* Input */}
                         <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '8px' }}>
                             <input
                                 className="input-base"
-                                placeholder="Ask about tasks or stats..."
+                                placeholder="Ask me to add a task..."
                                 value={input}
                                 onChange={(e) => setInput(e.target.value)}
                                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                                disabled={isThinking}
                                 style={{ flex: 1, fontSize: '0.85rem' }}
                             />
-                            <button onClick={handleSend} className="btn btn-primary" style={{ padding: '8px' }}>
+                            <button onClick={handleSend} disabled={isThinking} className="btn btn-primary" style={{ padding: '8px' }}>
                                 <Send size={18} />
                             </button>
                         </div>

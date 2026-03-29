@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, Loader2, Image as ImageIcon, Camera, Download, Folder, Upload, UploadCloud, FileText, ChevronRight, User as UserIcon, RefreshCw, Save, Plus, Trash2 } from 'lucide-react';
-import { generateStyleBreakdown, generateSceneBreakdown, generateStoryboardDescription, generateCharacters, extractStoryFromFile } from '../utils/gemini';
+import { Sparkles, Loader2, Image as ImageIcon, Camera, Download, Folder, Upload, UploadCloud, FileText, ChevronRight, User as UserIcon, RefreshCw, Save, Plus, Trash2, Server, Wifi } from 'lucide-react';
+import { generateStyleBreakdown, generateSceneBreakdown, generateStoryboardDescription, generateCharacters, extractStoryFromFile, generateImageAPI } from '../utils/gemini';
 import { useSettings } from '../context/SettingsContext';
 
 // Helper to escape CSV strings
@@ -15,11 +15,73 @@ const electron = window.require ? window.require('electron') : null;
 const ipcRenderer = electron ? electron.ipcRenderer : null;
 
 const AiAgent = () => {
-    const { geminiKey, nanoBananaKey, workspacePath, setWorkspacePath } = useSettings();
+    const { geminiKey, nanoBananaKey, workspacePath, setWorkspacePath, localEndpoints, saveLocalEndpoints } = useSettings();
 
     // Wizard State
     // 0: Workspace, 1: Story & Vibe, 2: Characters, 3: Storyboard Grid Editor, 4: Final Output Render
     const [step, setStep] = useState(0);
+    const [isLocalMode, setIsLocalMode] = useState(false);
+
+    const RECOMMENDED_MODELS = ['llama3.2', 'llama3', 'mistral', 'gemma2', 'phi3'];
+    const [installedTextModels, setInstalledTextModels] = useState([]);
+    const [isPullingModel, setIsPullingModel] = useState(false);
+    const [pullProgress, setPullProgress] = useState("");
+
+    const fetchInstalledModels = async () => {
+        if (!localEndpoints.text) return;
+        try {
+            const urlObj = new URL(localEndpoints.text);
+            const baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+            const res = await fetch(`${baseUrl}/api/tags`);
+            if (res.ok) {
+                const data = await res.json();
+                const models = data.models.map(m => m.name);
+                setInstalledTextModels(models);
+                if (!localEndpoints.textModel && models.length > 0) {
+                     saveLocalEndpoints({...localEndpoints, textModel: models[0]});
+                }
+            }
+        } catch(e) {
+            console.warn("Could not fetch local models", e);
+            setInstalledTextModels([]);
+        }
+    };
+
+    useEffect(() => {
+        if (isLocalMode && localEndpoints.text) {
+            fetchInstalledModels();
+        }
+    }, [isLocalMode, localEndpoints.text]);
+
+    const pullModel = async (modelName) => {
+        try {
+            if (!modelName) return;
+            setIsPullingModel(true);
+            setPullProgress(`Downloading ${modelName} (~2-4GB)... Please leave the app open.`);
+            const urlObj = new URL(localEndpoints.text);
+            const baseUrl = `${urlObj.protocol}//${urlObj.host}`;
+            
+            const res = await fetch(`${baseUrl}/api/pull`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: modelName, stream: false})
+            });
+            if (res.ok) {
+                setPullProgress(`Successfully downloaded ${modelName}`);
+                saveLocalEndpoints({...localEndpoints, textModel: modelName});
+                await fetchInstalledModels();
+            } else {
+                setPullProgress(`Failed to pull ${modelName}. Make sure Ollama is running.`);
+            }
+        } catch(e) {
+            setPullProgress(`Error: ${e.message}`);
+        } finally {
+            setTimeout(() => {
+                setIsPullingModel(false);
+                setPullProgress("");
+            }, 5000);
+        }
+    };
 
     const [error, setError] = useState(null);
     const [isGenerating, setIsGenerating] = useState(false);
@@ -48,13 +110,26 @@ const AiAgent = () => {
                 const lines = text.split('\n').filter(l => l.trim().length > 0);
                 if (lines.length > 1) {
                     const lastLine = lines[lines.length - 1];
-                    const matches = lastLine.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
-                    if (matches && matches.length >= 5) {
-                        const clean = (str) => str.replace(/^"|"$/g, '').replace(/""/g, '"');
-                        const loadedStory = clean(matches[2]);
-                        const loadedKeywords = clean(matches[1]).split(';').map(s => s.trim()).filter(Boolean);
-                        const loadedChars = JSON.parse(clean(matches[3]) || '[]');
-                        const loadedScenes = JSON.parse(clean(matches[4]) || '[]');
+
+                    // Robust CSV line parser
+                    const parseRow = (line) => {
+                        const res = []; let cur = ""; let inQ = false;
+                        for (let i = 0; i < line.length; i++) {
+                            if (line[i] === '"') {
+                                if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+                                else inQ = !inQ;
+                            } else if (line[i] === ',' && !inQ) { res.push(cur); cur = ""; }
+                            else cur += line[i];
+                        }
+                        res.push(cur); return res;
+                    };
+
+                    const parts = parseRow(lastLine);
+                    if (parts.length >= 5) {
+                        const loadedStory = parts[2];
+                        const loadedKeywords = parts[1].split(';').map(s => s.trim()).filter(Boolean);
+                        const loadedChars = JSON.parse(parts[3] || '[]');
+                        const loadedScenes = JSON.parse(parts[4] || '[]');
 
                         setStory(loadedStory);
                         setKeywords(loadedKeywords);
@@ -64,20 +139,20 @@ const AiAgent = () => {
                         if (loadedScenes.some(s => s.imageUrl || s.cameraPrompt)) setStep(4);
                         else if (loadedScenes.length > 0) setStep(3);
                         else if (loadedChars.length > 0) setStep(2);
-                        else if (loadedKeywords.length > 0) setStep(1);
                         else setStep(1);
                     }
                 } else {
                     setStep(1);
                 }
             } else {
-                setStep(1); // File doesn't exist yet
+                setStep(1);
             }
         } catch (err) {
-            console.error(err);
+            console.error("Failed to load workspace data:", err);
             setStep(1);
         }
     };
+
 
     useEffect(() => {
         // If workspacePath already exists globally when component mounts, try to auto-load
@@ -123,11 +198,15 @@ const AiAgent = () => {
                 escapeCsv(JSON.stringify(latestState.scenes || scenes))
             ].join(',');
 
-            await ipcRenderer.invoke('save-file', { filePath: csvPath, data: row + '\n', isBuffer: false });
+            const result = await ipcRenderer.invoke('save-file', { filePath: csvPath, data: row + '\n', isBuffer: false });
+            if (!result.success && result.code === 'EBUSY') {
+                alert(result.error);
+            }
         } catch (e) {
             console.error("Failed to sync to CSV", e);
         }
     };
+
 
     // -------------------------------------------------------------------------------- //
     // STEP 1: STORY & VIBE
@@ -142,35 +221,64 @@ const AiAgent = () => {
                 const newStory = story + (story ? '\n\n' : '') + text;
                 setStory(newStory);
                 await syncToCsv({ story: newStory });
-            } else if (file.type.startsWith('image/') || file.type === 'application/pdf') {
+            } else if (file.type.startsWith('image/') || file.type === 'application/pdf' || file.name.endsWith('.docx') || file.name.endsWith('.doc')) {
                 if (!geminiKey) {
-                    throw new Error("Gemini API Key is required for image/pdf OCR extraction.");
+                    throw new Error("Gemini API Key is required for extraction & translation.");
                 }
                 const reader = new FileReader();
                 reader.onload = async (e) => {
                     try {
                         const dataUrl = e.target.result;
                         const base64Data = dataUrl.split(',')[1];
-                        const extractedText = await extractStoryFromFile(base64Data, file.type, geminiKey);
-                        const newStory = story + (story ? '\n\n' : '') + extractedText;
+                        const result = await extractStoryFromFile(base64Data, file.type, geminiKey);
+
+                        const storyToSave = result.translatedText || result.originalText;
+                        const newStory = story + (story ? '\n\n' : '') + storyToSave;
                         setStory(newStory);
+
+                        // Save both original and translation to workspace if not English
+                        if (!result.isEnglish && workspacePath && ipcRenderer) {
+                            const timestamp = Date.now();
+                            const docContent = `
+                                <html>
+                                    <body style="font-family: Arial, sans-serif; line-height: 1.6; padding: 40px;">
+                                        <h1>Production Story Concept</h1>
+                                        <p><strong>Detected Language:</strong> ${result.language}</p>
+                                        <hr/>
+                                        <h2>Original Copy</h2>
+                                        <div style="white-space: pre-wrap;">${result.originalText}</div>
+                                        <br/><br/>
+                                        <h2>English Translation</h2>
+                                        <div style="white-space: pre-wrap;">${result.translatedText}</div>
+                                    </body>
+                                </html>
+                            `;
+                            await ipcRenderer.invoke('save-file', {
+                                filePath: `${workspacePath}/story_translation_${timestamp}.doc`,
+                                data: docContent,
+                                isBuffer: false
+                            });
+                        }
+
                         await syncToCsv({ story: newStory });
                     } catch (err) {
-                        setError("Failed to extract text from file via AI.");
+                        console.error(err);
+                        setError("Failed to extract or translate story via AI.");
                     } finally {
                         setIsExtracting(false);
                     }
                 };
                 reader.readAsDataURL(file);
-                return; // FileReader is async, handling finally inside onload
+                return;
             } else {
-                setError("Unsupported file type. Please upload TXT, PDF, or Images.");
+                setError("Unsupported file type. Please upload TXT, PDF, Word, or Images.");
             }
         } catch (err) {
             setError(err.message || "Failed to parse file.");
         }
         setIsExtracting(false);
     };
+
 
     const handleDrop = (e) => {
         e.preventDefault();
@@ -203,7 +311,7 @@ const AiAgent = () => {
         setIsGenerating(true);
         setError(null);
         try {
-            const kw = await generateStyleBreakdown(story, geminiKey);
+            const kw = await generateStyleBreakdown(story, geminiKey, isLocalMode ? localEndpoints.text : '', isLocalMode ? localEndpoints.textModel : '');
             setKeywords(kw);
             await syncToCsv({ story, keywords: kw });
             searchVibeImages(kw);
@@ -233,11 +341,14 @@ const AiAgent = () => {
         setIsGenerating(true);
         try {
             await new Promise(res => setTimeout(res, 800));
+            // Switching to Pollinations.ai for reliable, keyword-based generation
             const mockResults = Array.from({ length: 5 }).map((_, i) => {
-                const seed = Math.floor(Math.random() * 1000);
-                const query = kwArray.length > 0 ? kwArray[i % kwArray.length] : 'cinematic';
-                return `https://source.unsplash.com/random/400x300/?${query},film,${seed}`;
+                const seed = Math.floor(Math.random() * 100000);
+                const query = kwArray.length > 0 ? kwArray[i % kwArray.length] : 'cinematic film still';
+                return `https://image.pollinations.ai/prompt/${encodeURIComponent(query + " cinematic film still production reference")}?width=800&height=600&seed=${seed}&nologo=true`;
             });
+
+
             setVibeImages(mockResults);
         } catch (e) {
             console.error(e);
@@ -249,14 +360,16 @@ const AiAgent = () => {
     const saveVibeImageLocal = async (url) => {
         if (!workspacePath || !ipcRenderer) return;
         try {
-            const response = await fetch(url);
-            const arrayBuffer = await response.arrayBuffer();
+            // Use download-image IPC to bypass 403/CORS
+            const download = await ipcRenderer.invoke('download-image', url);
+            if (!download.success) throw new Error(download.error);
+
             const filename = `vibe_ref_${Date.now()}.jpg`;
             const filePath = `${workspacePath}/${filename}`;
 
             const result = await ipcRenderer.invoke('save-file', {
                 filePath,
-                data: Buffer.from(arrayBuffer),
+                data: download.data,
                 isBuffer: true
             });
 
@@ -264,13 +377,15 @@ const AiAgent = () => {
                 setReferences(prev => [...prev, url]);
                 alert(`Saved as ${filename} to workspace!`);
             } else {
-                throw new Error("IPC Save failed");
+                alert(result.error || "Save failed");
             }
         } catch (e) {
             console.error("Failed to save vibe image natively", e);
-            alert("Failed to save image natively. Check console for details.");
+            alert(`Failed to download/save image: ${e.message}`);
         }
     };
+
+
 
     const handleUploadReference = (e) => {
         const files = Array.from(e.target.files);
@@ -285,7 +400,7 @@ const AiAgent = () => {
         if (!geminiKey) return;
         setIsGenerating(true);
         try {
-            const chars = await generateCharacters(story, keywords, geminiKey);
+            const chars = await generateCharacters(story, keywords, geminiKey, isLocalMode ? localEndpoints.text : '', isLocalMode ? localEndpoints.textModel : '');
             const enriched = chars.map(c => ({
                 ...c,
                 imageUrl: null
@@ -312,45 +427,44 @@ const AiAgent = () => {
         setCharacters([...updated]);
 
         try {
-            if (nanoBananaKey) {
-                await new Promise(res => setTimeout(res, 1500));
-                updated[index].imageUrl = `https://images.unsplash.com/photo-1534447677768-be436bb09401?auto=format&fit=crop&q=80&w=400&h=400&timestamp=${Date.now()}`;
-            } else {
-                updated[index].imageUrl = null;
-                alert("Please configure Nano Banana API Key in Settings to render images.");
-            }
+            const prompt = `${updated[index].description}, cinematic movie concept art, T-Pose reference sheet, front side and back views, unreal engine 5 render`;
+            updated[index].imageUrl = await generateImageAPI(prompt, geminiKey, isLocalMode ? localEndpoints.image : '');
         } catch (e) {
             updated[index].imageUrl = null;
+            alert(`Image Generation Failed: ${e.message}`);
         }
 
         setCharacters([...updated]);
         await syncToCsv({ characters: updated });
     };
 
+
     const saveCharacterToLocal = async (char) => {
         if (!workspacePath || !char.imageUrl || !ipcRenderer) return;
         try {
-            const response = await fetch(char.imageUrl);
-            const arrayBuffer = await response.arrayBuffer();
+            const download = await ipcRenderer.invoke('download-image', char.imageUrl);
+            if (!download.success) throw new Error(download.error);
+
             const filename = `${char.name.replace(/[^a-z0-9]/gi, '_')}_concept.jpg`;
             const filePath = `${workspacePath}/${filename}`;
 
             const result = await ipcRenderer.invoke('save-file', {
                 filePath,
-                data: Buffer.from(arrayBuffer),
+                data: download.data,
                 isBuffer: true
             });
 
             if (result.success) {
                 alert(`Saved ${char.name} T-Pose to workspace natively!`);
             } else {
-                throw new Error("IPC Save failed");
+                alert(result.error || "Save failed");
             }
         } catch (e) {
-            console.error("Failed to save character image natively", e);
-            alert("Failed to save image natively. Check console for details.");
+            console.error("Failed to download/save character image", e);
+            alert(`Failed to save image: ${e.message}`);
         }
     };
+
 
     // -------------------------------------------------------------------------------- //
     // STEP 3: STORYBOARD GRID (Editable)
@@ -360,7 +474,7 @@ const AiAgent = () => {
         setIsGenerating(true);
         setStep(3);
         try {
-            const basicScenes = await generateSceneBreakdown(story, keywords, characters, geminiKey);
+            const basicScenes = await generateSceneBreakdown(story, keywords, characters, geminiKey, isLocalMode ? localEndpoints.text : '', isLocalMode ? localEndpoints.textModel : '');
             setScenes(basicScenes);
             await syncToCsv({ scenes: basicScenes });
         } catch (e) {
@@ -398,24 +512,19 @@ const AiAgent = () => {
             const scene = enrichedScenes[i];
             scene.cameraPrompt = "Generating AI description...";
             scene.imageUrl = null;
-            setScenes([...enrichedScenes]); // Trigger UI update for loading state
+            setScenes([...enrichedScenes]);
 
             try {
-                scene.cameraPrompt = await generateStoryboardDescription(scene, keywords, characters, geminiKey);
-                if (nanoBananaKey) {
-                    await new Promise(res => setTimeout(res, 800));
-                    const mockImages = [
-                        'https://images.unsplash.com/photo-1621252179027-94459d278660?auto=format&fit=crop&q=80&w=800',
-                        'https://images.unsplash.com/photo-1542204165-65bf26472b9b?auto=format&fit=crop&q=80&w=800'
-                    ];
-                    scene.imageUrl = mockImages[i % mockImages.length];
-                }
+                scene.cameraPrompt = await generateStoryboardDescription(scene, keywords, characters, geminiKey, isLocalMode ? localEndpoints.text : '', isLocalMode ? localEndpoints.textModel : '');
+                const prompt = `${scene.cameraPrompt}, cinematic movie still, highly detailed storyboard frame, film grain`;
+                scene.imageUrl = await generateImageAPI(prompt, geminiKey, isLocalMode ? localEndpoints.image : '');
             } catch (e) {
-                scene.cameraPrompt = "Failed to generate AI camera prompt.";
+                scene.cameraPrompt = "Failed to generate AI prompt.";
             }
 
-            setScenes([...enrichedScenes]); // Trigger UI update after generation
+            setScenes([...enrichedScenes]);
         }
+
 
         setIsGenerating(false);
         await syncToCsv({ scenes: enrichedScenes });
@@ -440,12 +549,91 @@ const AiAgent = () => {
 
     return (
         <div style={{ paddingBottom: '4rem', maxWidth: '1200px', margin: '0 auto' }}>
-            <header style={{ marginBottom: '2rem' }}>
-                <h1 className="title-gradient" style={{ fontSize: '2.5rem', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <Sparkles size={32} color="var(--accent-neon)" /> Ideation Wizard
-                </h1>
-                <p style={{ color: 'var(--text-secondary)' }}>A multi-step production pipeline connected directly to your local workspace.</p>
+            <header style={{ marginBottom: '2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                    <h1 className="title-gradient" style={{ fontSize: '2.5rem', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <Sparkles size={32} color="var(--accent-neon)" /> Ideation Wizard
+                    </h1>
+                    <p style={{ color: 'var(--text-secondary)' }}>A multi-step production pipeline connected directly to your local workspace.</p>
+                </div>
+                
+                {/* Mode Toggle UI */}
+                <div className="glass-panel" style={{ padding: '0.5rem', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '24px' }}>
+                    <button 
+                        onClick={() => setIsLocalMode(false)}
+                        className={`btn ${!isLocalMode ? 'btn-primary' : 'btn-ghost'}`} 
+                        style={{ padding: '6px 12px', borderRadius: '20px', fontSize: '0.85rem' }}
+                    >
+                        <Wifi size={14} style={{ marginRight: '6px' }} /> Online Collab Mode
+                    </button>
+                    <button 
+                        onClick={() => setIsLocalMode(true)}
+                        className={`btn ${isLocalMode ? 'btn-primary' : 'btn-ghost'}`} 
+                        style={{ padding: '6px 12px', borderRadius: '20px', fontSize: '0.85rem' }}
+                    >
+                        <Server size={14} style={{ marginRight: '6px' }} /> Local LLMs Mode
+                    </button>
+                </div>
             </header>
+            
+            <AnimatePresence>
+                {isLocalMode && (
+                    <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden', marginBottom: '2rem' }}>
+                        <div className="glass-panel" style={{ padding: '1.5rem', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Text API</label>
+                                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                                    <input className="input-base" style={{ fontSize: '0.85rem', flex: 1, padding: '8px' }} value={localEndpoints.text} onChange={e => saveLocalEndpoints({ ...localEndpoints, text: e.target.value })} placeholder="http://127.0.0.1:11434/api/generate" />
+                                </div>
+                                <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Selected Model</label>
+                                <div style={{ position: 'relative' }}>
+                                    <select 
+                                        className="input-base" 
+                                        style={{ fontSize: '0.85rem', width: '100%', cursor: 'pointer', appearance: 'menulist' }}
+                                        value={localEndpoints.textModel || ''}
+                                        onChange={(e) => {
+                                            const val = e.target.value;
+                                            if (installedTextModels.includes(val)) {
+                                                saveLocalEndpoints({ ...localEndpoints, textModel: val });
+                                            } else {
+                                                pullModel(val);
+                                            }
+                                        }}
+                                        disabled={isPullingModel}
+                                    >
+                                        <option value="" disabled>Select a model...</option>
+                                        {installedTextModels.length > 0 && (
+                                            <optgroup label="Installed (Active)" style={{ color: '#111' }}>
+                                                {installedTextModels.map(m => (
+                                                    <option key={m} value={m} style={{ color: '#111', fontWeight: '500' }}>{m}</option>
+                                                ))}
+                                            </optgroup>
+                                        )}
+                                        <optgroup label="Available to Download" style={{ color: '#888' }}>
+                                            {RECOMMENDED_MODELS.filter(m => !installedTextModels.some(im => im.startsWith(m))).map(m => (
+                                                <option key={m} value={m} style={{ color: '#888' }}>{m} (Download ⬇️)</option>
+                                            ))}
+                                        </optgroup>
+                                    </select>
+                                    {isPullingModel && <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--accent-neon)', display: 'flex', alignItems: 'center', gap: '6px' }}><Loader2 size={12} className="animate-spin" /> {pullProgress}</div>}
+                                </div>
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Image API</label>
+                                <input className="input-base" style={{ fontSize: '0.85rem', width: '100%' }} value={localEndpoints.image} onChange={e => saveLocalEndpoints({ ...localEndpoints, image: e.target.value })} placeholder="http://127.0.0.1:7860/sdapi/v1/txt2img" />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Video API</label>
+                                <input className="input-base" style={{ fontSize: '0.85rem', width: '100%' }} value={localEndpoints.video} onChange={e => saveLocalEndpoints({ ...localEndpoints, video: e.target.value })} placeholder="http://localhost:8080/generate_video" />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '0.75rem', marginBottom: '4px', color: 'var(--text-secondary)' }}>Audio API</label>
+                                <input className="input-base" style={{ fontSize: '0.85rem', width: '100%' }} value={localEndpoints.audio} onChange={e => saveLocalEndpoints({ ...localEndpoints, audio: e.target.value })} placeholder="http://localhost:8000/v1/audio/generations" />
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             {renderSteps()}
 

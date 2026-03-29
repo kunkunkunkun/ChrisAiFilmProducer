@@ -11,24 +11,28 @@ const SettingsModal = ({ isOpen, onClose }) => {
         theme, setTheme,
         workspacePath, setWorkspacePath,
         geminiKey, nanoBananaKey, saveKeys,
+        localEndpoints, saveLocalEndpoints,
         googleAccount, linkGoogleAccount, unlinkGoogleAccount
     } = useSettings();
 
     const [tempGemini, setTempGemini] = useState(geminiKey);
     const [tempBanana, setTempBanana] = useState(nanoBananaKey);
     const [tempEmail, setTempEmail] = useState('');
+    const [tempLocal, setTempLocal] = useState({ text: '', image: '', video: '', audio: '' });
 
     useEffect(() => {
         if (isOpen) {
             setTempGemini(geminiKey);
             setTempBanana(nanoBananaKey);
+            setTempLocal(localEndpoints || { text: '', image: '', video: '', audio: '' });
         }
-    }, [isOpen, geminiKey, nanoBananaKey]);
+    }, [isOpen, geminiKey, nanoBananaKey, localEndpoints]);
 
     if (!isOpen) return null;
 
     const handleSave = () => {
         saveKeys(tempGemini, tempBanana);
+        saveLocalEndpoints(tempLocal);
         onClose();
     };
 
@@ -143,6 +147,53 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                     style={{ paddingLeft: '36px' }}
                                 />
                             </div>
+                        </div>
+                    </div>
+                </section>
+
+                {/* Local API Endpoints */}
+                <section>
+                    <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Local Model Endpoints</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        <div>
+                            <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '6px', fontWeight: '500' }}>Local Text LLM (e.g. Ollama localhost:11434)</label>
+                            <input
+                                type="text"
+                                value={tempLocal.text}
+                                onChange={e => setTempLocal(prev => ({ ...prev, text: e.target.value }))}
+                                className="input-base"
+                                placeholder="http://127.0.0.1:11434/api/generate"
+                            />
+                        </div>
+                        <div>
+                            <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '6px', fontWeight: '500' }}>Local Image API</label>
+                            <input
+                                type="text"
+                                value={tempLocal.image}
+                                onChange={e => setTempLocal(prev => ({ ...prev, image: e.target.value }))}
+                                className="input-base"
+                                placeholder="http://127.0.0.1:7860/sdapi/v1/txt2img"
+                            />
+                        </div>
+                        <div>
+                            <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '6px', fontWeight: '500' }}>Local Audio API</label>
+                            <input
+                                type="text"
+                                value={tempLocal.audio}
+                                onChange={e => setTempLocal(prev => ({ ...prev, audio: e.target.value }))}
+                                className="input-base"
+                                placeholder="http://localhost:8000/v1/audio/generations"
+                            />
+                        </div>
+                        <div>
+                            <label style={{ display: 'block', fontSize: '0.85rem', marginBottom: '6px', fontWeight: '500' }}>Local Video API</label>
+                            <input
+                                type="text"
+                                value={tempLocal.video}
+                                onChange={e => setTempLocal(prev => ({ ...prev, video: e.target.value }))}
+                                className="input-base"
+                                placeholder="http://localhost:8080/generate_video"
+                            />
                         </div>
                     </div>
                 </section>

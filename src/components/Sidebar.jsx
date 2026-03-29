@@ -29,8 +29,15 @@ const Sidebar = ({ onSettingsClick }) => {
             flexDirection: 'column',
             padding: '1.5rem 1rem'
         }}>
-            {/* Brand */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '0 12px', marginBottom: '2.5rem' }}>
+            {/* Brand / Drag Region */}
+            <div className="window-drag-region" style={{
+                padding: '0 12px',
+                marginBottom: '2.5rem',
+                cursor: 'default',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px'
+            }}>
                 <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <Sparkles size={18} color="white" />
                 </div>

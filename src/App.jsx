@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import AiAgent from './pages/AiAgent';
 import ProjectDetail from './pages/ProjectDetail';
 import Projects from './pages/Projects';
+import Team from './pages/Team';
 import Layout from './components/Layout';
 import './App.css';
 
@@ -33,6 +34,7 @@ function App() {
             <Route path="dashboard/project/:id" element={<ProjectDetail />} />
             <Route path="agent" element={<AiAgent />} />
             <Route path="projects" element={<Projects />} />
+            <Route path="team" element={<Team />} />
           </Route>
         </Routes>
       </BrowserRouter>

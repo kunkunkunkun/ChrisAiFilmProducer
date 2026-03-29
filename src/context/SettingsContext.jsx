@@ -8,6 +8,16 @@ export const SettingsProvider = ({ children }) => {
     const [geminiKey, setGeminiKey] = useState(localStorage.getItem('ai_producer_gemini_key') || '');
     const [nanoBananaKey, setNanoBananaKey] = useState(localStorage.getItem('ai_producer_nano_banana_key') || '');
     const [googleAccount, setGoogleAccount] = useState(localStorage.getItem('ai_producer_google_account') ? JSON.parse(localStorage.getItem('ai_producer_google_account')) : null);
+    
+    const storedEndpoints = localStorage.getItem('ai_producer_local_endpoints');
+    const parsedEndpoints = storedEndpoints ? JSON.parse(storedEndpoints) : {};
+    const [localEndpoints, setLocalEndpoints] = useState({
+        text: parsedEndpoints.text || '',
+        textModel: parsedEndpoints.textModel || '',
+        image: parsedEndpoints.image || '',
+        video: parsedEndpoints.video || '',
+        audio: parsedEndpoints.audio || ''
+    });
 
     useEffect(() => {
         document.documentElement.setAttribute('data-theme', theme);
@@ -30,6 +40,11 @@ export const SettingsProvider = ({ children }) => {
         localStorage.setItem('ai_producer_nano_banana_key', banana);
     };
 
+    const saveLocalEndpoints = (endpoints) => {
+        setLocalEndpoints(endpoints);
+        localStorage.setItem('ai_producer_local_endpoints', JSON.stringify(endpoints));
+    };
+
     const linkGoogleAccount = (email) => {
         const account = { email, linkedAt: new Date().toISOString() };
         setGoogleAccount(account);
@@ -46,6 +61,7 @@ export const SettingsProvider = ({ children }) => {
             theme, setTheme,
             workspacePath, setWorkspacePath,
             geminiKey, nanoBananaKey, saveKeys,
+            localEndpoints, saveLocalEndpoints,
             googleAccount, linkGoogleAccount, unlinkGoogleAccount
         }}>
             {children}
